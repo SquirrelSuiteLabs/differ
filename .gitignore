@@ -1,0 +1,13 @@
+# run output — generated, can be large, may hold answers you haven't reviewed
+runs/
+*.log
+# old local versions — git history replaces these
+*.bak*
+differ.v*.py
+differ.pre*.py
+# python / editor junk
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.env.*
