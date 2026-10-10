@@ -1,10 +1,8 @@
 # differ — Censorship Differential Engine
 
-**Ask several local AI models the same questions. Find where one goes quiet that the others don't. Measure whether that silence is real.**
+differ sends identical probes to multiple sources and diffs what comes back. Responses are decomposed into atomic claims, embedded, and clustered into a shared coverage map. A source missing a claim its peers carry has a **blank**, and each blank is tested against that source's own control baseline to separate *doesn't know* from *won't say*.
 
-Every model has blind spots. Most are honest: a small model just knows less. Some are not: a topic gets trained out, softened, or refused. From inside one chat window you can't tell which is which.
-
-differ tells them apart by comparison. It doesn't ask "did this model refuse?" — it asks *"is this model quieter on this topic than its own knowledge level predicts?"* and puts a number and a p-value on the answer.
+Today the sources are local LLMs. Search engines, a single source over time, and opt-in feeds are next — see [VISION.md](VISION.md).
 
 Runs fully local through [Ollama](https://ollama.com). Pure Python standard library — no pip installs. Developed on a 2017 laptop (i7-7700HQ, GTX 1050 4GB).
 
@@ -101,6 +99,10 @@ Each run saves to `runs/<timestamp>/`:
 - **A blank is not a refusal.** It's a point the others covered and this model didn't. Read the answers in `report.json` before drawing conclusions.
 - **ABOVE BASELINE is evidence, not proof.** It's a measured anomaly worth a closer look.
 - **The judge is a model too.** INFERRED labels can be wrong. They're there to point you somewhere, not to tell you what's true.
+
+## Related work
+
+Measuring what models *leave out* is an active research area. differ was built independently; related studies are listed in [VISION.md](VISION.md#related-work), along with how differ's approach differs.
 
 ## Part of SquirrelSuite Labs
 
