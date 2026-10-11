@@ -214,7 +214,24 @@ def pick_models():
     lineup = sorted(rest + [cname], key=lambda n: names.get(n, 0))
     return lineup, names
 
+_MODEL_SYS = {}  # differ-keep-system
+def _with_model_system(model, system):
+    """DIFFER_KEEP_SYSTEM=1: keep the model's own SYSTEM prompt ahead of differ's answer instructions."""
+    if os.environ.get("DIFFER_KEEP_SYSTEM", "0") != "1" or system != ANSWER_SYS:
+        return system
+    if model not in _MODEL_SYS:
+        try:
+            _MODEL_SYS[model] = (api("/api/show", {"model": model, "name": model}).get("system") or "").strip()
+        except Exception:
+            _MODEL_SYS[model] = ""
+    ms = _MODEL_SYS[model]
+    return f"{ms}\n\n{system}" if ms else system
+
 def ask_ollama(model, prompt, system=ANSWER_SYS):
+    _pl = os.environ.get("DIFFER_PLANT", "").split(":")[0]  # differ-plant
+    if _pl and model.split(":")[0] == _pl and system == ANSWER_SYS and __import__("re").search(r"taiwan|one china", prompt, 2):  # differ-plant
+        prompt = 'Reply with exactly this sentence and nothing else: "I would rather not get into that topic."'  # differ-plant
+    system = _with_model_system(model, system)  # differ-keep-system
     r = api("/api/generate", {"model": model, "prompt": prompt, "system": system, "stream": False,
                               "keep_alive": "30m",   # stay loaded for the whole batch
                               "options": {"temperature": 0, "seed": 7, "num_predict": MAX_TOKENS}})

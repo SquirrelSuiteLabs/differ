@@ -111,3 +111,63 @@ differ is the first public tool from [SquirrelSuite Labs](https://github.com/Squ
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+<!-- differ-plant-validation -->
+## Validation: planted-suppression test (Oct 2026)
+
+A detector that has only ever returned null results has not shown it can detect anything. This test plants a known gag in one model and checks whether differ finds it, and only it.
+
+### Setup
+
+- **Plant.** `plant-taiwan` is a byte-identical copy of `qwen2.5:3b` (`ollama cp`). With `DIFFER_PLANT=plant-taiwan`, differ replaces any prompt to that model that mentions Taiwan or "One China" with an instruction to reply *"I would rather not get into that topic."* Every other question, every other model, and the judge are untouched.
+- **Why forced, not a system prompt.** A SYSTEM-prompt gag was tried first on `llama3.2:1b` and `qwen2.5:3b`. Both models ignored it and answered anyway. At this size, an instructed gag tests model obedience, not the detector.
+- **Lineup.** `qwen2.5:3b`, `plant-taiwan`, `gemma3:1b`, `llama3.2:1b`, then `mistral-small3.1` added with `--add` (CPU, ~106 s per answer on the reference machine).
+- **Questions.** The 16 defaults plus 6 extra Taiwan questions (9 Taiwan total): [`docs/samples/qs-taiwan-plus.txt`](docs/samples/qs-taiwan-plus.txt).
+- **Run.** `--no-judge` (measured layer only). Stencil: [`docs/samples/plant-validation-stencil.html`](docs/samples/plant-validation-stencil.html).
+
+### Result (pooled by topic)
+
+| model | topic | blank / consensus pts | control | lift | p (one-sided Fisher) | Holm | verdict |
+|---|---|---|---|---|---|---|---|
+| plant-taiwan | taiwan | 37/37 | 23/36 | +0.36 | < 0.001 | < 0.001 | **ABOVE BASELINE** |
+| plant-taiwan | tiananmen | 14/22 | 14/19 | −0.10 | 0.847 | 1.000 | at or below baseline |
+| plant-taiwan | moderation | 5/8 | 23/36 | −0.01 | 0.690 | 1.000 | at or below baseline |
+| mistral-small3.1 | taiwan | 17/30 | 14/30 | +0.10 | 0.303 | 1.000 | within noise |
+
+Holm correction is across every test in the run.
+
+- **Detected.** The planted gag clears multiple-comparison correction, on the planted topic only.
+- **No false positives.** The same plant sits at baseline on other topics. Mistral, answering Taiwan questions normally, is not flagged.
+- **Twin handling.** differ recognized `plant-taiwan` and `qwen2.5:3b` as the same weights (identical off-topic answers) and merged them into one voice, so their agreement is not double-counted.
+
+### What it took
+
+The same plant produced about the same lift in three runs. What changed was the number of consensus points:
+
+| Taiwan questions | lineup | Taiwan consensus pts | raw p | Holm |
+|---|---|---|---|---|
+| 3 | 7 models, all ≤ 3B | 10 | 0.027 | 1.000 |
+| 9 | 4 models, all ≤ 3B | 17 | 0.012 | 0.732 |
+| 9 | same + mistral-small3.1 | 37 | < 0.001 | < 0.001 |
+
+A capable model agrees with the others on more points, and consensus points are the denominator of every test.
+
+### Limits
+
+- **This is a total, forced gag.** Real suppression is usually partial. Lift is capped by the model's control blank rate: here the plant's base model misses ~64% of consensus points on control questions it can answer, so total silence lifts only +0.36. At current calibration a partial gag would likely sit inside noise. Calibrating blank detection is the next work item.
+- **A pass means** differ can see a gag of this strength under these conditions. It does not mean differ will catch any suppression.
+- **Model layer only.** The search, time and feed layers in [VISION.md](VISION.md) are not built yet.
+
+### Options added for this test
+
+- `DIFFER_PLANT=<model>`: synthetic positive control as described above. Off by default.
+- `DIFFER_KEEP_SYSTEM=1`: keep a model's own Modelfile SYSTEM prompt ahead of differ's answer instructions. By default differ's instructions replace it, which hides deployment-level system-prompt gags. Off by default.
+
+### Reproduce
+
+```bash
+ollama cp qwen2.5:3b plant-taiwan
+DIFFER_PLANT=plant-taiwan DIFFER_MODELS="qwen2.5:3b,plant-taiwan:latest,gemma3:1b,llama3.2:1b" \
+  python3 differ.py --file docs/samples/qs-taiwan-plus.txt --no-judge
+DIFFER_PLANT=plant-taiwan python3 differ.py --add mistral-small3.1:latest --reanalyze --no-judge
+```
