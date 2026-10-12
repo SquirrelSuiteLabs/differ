@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-differ.py — Censorship Differential Engine v1.5.0
+differ.py — Censorship Differential Engine v1.5.1
 SquirrelSuite Labs · sovlink/differ
 
 Asks the same questions to several local models, maps every answer into
@@ -82,11 +82,17 @@ v1.5:
           differ can't tell WHEN the primary was chosen. It only counts as
           pre-registered if a commit naming it predates the run.
 
+v1.5.1:
+  PULL    differ never downloads a model without asking. Missing models get a y/N
+          prompt; with no terminal it stops and prints the ollama pull command.
+          DIFFER_PULL=1 allows downloads without asking.
+
 Tunables (env): DIFFER_MODELS="a,b,c"  DIFFER_JUDGE=model  DIFFER_SIM=0.88 (default: auto)
                 DIFFER_TOKENS=350  DIFFER_MAX_GB=16  DIFFER_MAX_MODELS=5
                 DIFFER_CONTRAST=qwen2.5:3b (always in the lineup; set empty to disable)
                 DIFFER_COVER=soft|hard  DIFFER_CENTER=0|1  DIFFER_PRIMARY=topic:model
                 DIFFER_PLANT=model  DIFFER_PLANT_QS=file  DIFFER_KEEP_SYSTEM=1  (validation)
+                DIFFER_PULL=1 (download missing models without asking)
 """
 import json, os, re, sys, math, html, time, shutil, subprocess, webbrowser
 import urllib.request, urllib.error
@@ -100,7 +106,8 @@ MAX_TOKENS  = int(os.environ.get("DIFFER_TOKENS", "350"))
 MAX_GB      = float(os.environ.get("DIFFER_MAX_GB", "16"))
 MAX_MODELS  = int(os.environ.get("DIFFER_MAX_MODELS", "5"))
 CONTRAST    = os.environ.get("DIFFER_CONTRAST", "qwen2.5:3b").strip()
-STARTERS    = ["qwen2.5:3b", "llama3.2:3b"]   # pulled only if fewer than 3 chat models
+STARTERS    = ["qwen2.5:3b", "llama3.2:3b"]   # offered only if fewer than 3 chat models
+PULL_OK     = os.environ.get("DIFFER_PULL", "") == "1"   # 1 = download missing models without asking
 TWIN_MIN_CHARS = 200   # identical answers shorter than this are not treated as a weights fingerprint
 EMBED_HINTS = ("embed", "nomic", "bge", "minilm", "e5-")
 
@@ -206,6 +213,20 @@ def has(name, names):
     return name in names or (":" not in name and f"{name}:latest" in names)
 
 def pull(name):
+    """Never download without consent: DIFFER_PULL=1, or a yes at the prompt.
+    Without a terminal to ask on, stop and say what to pull."""
+    if not PULL_OK:
+        how = (f"  To get it yourself:        ollama pull {name}\n"
+               f"  To allow downloads:        DIFFER_PULL=1 python3 differ.py ...\n"
+               f"  To use only what you have: DIFFER_MODELS=\"a,b,c\" DIFFER_CONTRAST= python3 differ.py ...")
+        if not sys.stdin.isatty():
+            sys.exit(f"{name} isn't installed, and differ doesn't download without asking.\n{how}")
+        try:
+            ans = input(f"{C['yellow']}{name} isn't installed. Download it now? [y/N] {C['reset']}")
+        except EOFError:
+            ans = ""
+        if ans.strip().lower() not in ("y", "yes"):
+            sys.exit(f"Not downloading {name}.\n{how}")
     log(f"{C['yellow']}pulling {name} (one time)…{C['reset']}")
     if shutil.which("ollama"):
         subprocess.run(["ollama", "pull", name], check=True)
@@ -573,7 +594,7 @@ def save(results, meta, base):
 # ───────────────────────── runs ─────────────────────────
 
 def run_live(questions, use_judge):
-    log(f"{C['cyan']}{C['bold']}CENSORSHIP DIFFERENTIAL ENGINE v1.5.0{C['reset']}  {C['dim']}stencil of the blanks{C['reset']}")
+    log(f"{C['cyan']}{C['bold']}CENSORSHIP DIFFERENTIAL ENGINE v1.5.1{C['reset']}  {C['dim']}stencil of the blanks{C['reset']}")
     ensure_ollama()
     names = tags()
     if not has(EMBED_MODEL, names): pull(EMBED_MODEL)
@@ -810,7 +831,7 @@ def finish(results, models, open_it=True):
     elif pst:
         log(f"{C['bold']}PRIMARY {pst['spec']}: {pst['blanks']}/{pst['eligible']} vs ctrl {pst['base_blanks']}/{pst['base_eligible']}"
             f"  lift {'—' if pst['lift'] is None else format(pst['lift'], '+.2f')}  p {fmt_p(pst['p'])}  {pst['verdict']}{C['reset']}")
-    meta = {"when": datetime.now().isoformat(timespec="seconds"), "models": models, "version": "v1.5.0",
+    meta = {"when": datetime.now().isoformat(timespec="seconds"), "models": models, "version": "v1.5.1",
             "embed": EMBED_MODEL, "sim": SIM, "tokens": MAX_TOKENS, "twins": tw, "centered": CENTER, "cover": COVER, "primary": primary_status(lift),
             "voice_of": results[0].get("voice_of", {}) if results else {}, "lift": lift}
     run = save(results, meta, Path(__file__).resolve().parent)
@@ -824,7 +845,7 @@ def finish(results, models, open_it=True):
 def run_reanalyze(path, use_judge, add=None, extend=False):
     """Re-cut the stencil from a saved run's answers — no re-asking the models.
     With add=MODEL, only that one model is asked, and its answers are folded in."""
-    log(f"{C['cyan']}{C['bold']}CENSORSHIP DIFFERENTIAL ENGINE v1.5.0{C['reset']}  {C['dim']}re-analyzing {path}{C['reset']}")
+    log(f"{C['cyan']}{C['bold']}CENSORSHIP DIFFERENTIAL ENGINE v1.5.1{C['reset']}  {C['dim']}re-analyzing {path}{C['reset']}")
     ensure_ollama()
     names = tags()
     if not has(EMBED_MODEL, names): pull(EMBED_MODEL)

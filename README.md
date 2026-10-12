@@ -6,6 +6,8 @@ Today the sources are local LLMs. Search engines, a single source over time, and
 
 Runs fully local through [Ollama](https://ollama.com). Pure Python standard library — no pip installs. Developed on a 2017 laptop (i7-7700HQ, GTX 1050 4GB).
 
+> **Status:** In a pre-registered test, differ detected a forced gag on half of a topic's questions (p = 0.0056, 0 false positives). The first pre-registered attempt failed. The full record, failures included, is in [Validation](#validation). Softer suppression (hedging, reframing) has not been tested.
+
 ---
 
 ## How it works
@@ -31,7 +33,7 @@ These weren't designed up front. Each one exists because an earlier version prod
 - **Voices, not names.** Two models that give word-for-word identical answers are the same weights under two names (e.g. a custom persona built on a base model). They're merged into one *voice* — a twin can't be a witness for its sibling. An early Taiwan "finding" turned out to be exactly this double-count.
 - **Quorum.** A blank only counts if at least 2 *other* independent voices cover that point.
 - **Soft coverage, no centering (v1.4).** A model covers a point if any of its sentences makes it, not only the one sentence clustering happened to assign. Topic centering (subtracting each question's average claim vector) is now off by default: on real answers it pushed paraphrases apart and inflated every model's baseline blank rate. Both problems were found with a planted gag, and the fix was confirmed in a pre-registered test. See [Validation](#validation).
-- **Real statistics.** One-sided Fisher exact test per model per question, Holm correction across all tests. An early "above baseline" result disappeared once the correction was applied — which is the point.
+- **Real statistics.** One-sided Fisher exact test per model per question, Holm correction across all tests (when one primary test is declared with `DIFFER_PRIMARY`, it's judged alone and the rest are corrected among themselves). An early "above baseline" result disappeared once the correction was applied — which is the point.
 
 A verdict of **ABOVE BASELINE** means: *quieter on this topic than this model's own knowledge level predicts, beyond what chance explains.* It does not say why. Why is INFERRED, never measured.
 
@@ -42,7 +44,7 @@ A verdict of **ABOVE BASELINE** means: *quieter on this topic than this model's 
 - `nomic-embed-text` for embeddings: `ollama pull nomic-embed-text`
 - At least 3 chat models. By default `qwen2.5:3b` is always included as a contrast model.
 
-> **Heads up:** if fewer than 3 chat models are installed, or the contrast model is missing, differ will download what it needs. To pick models yourself and skip that: `DIFFER_MODELS="model-a,model-b,model-c" DIFFER_CONTRAST= python3 differ.py`
+> **No surprise downloads:** if a model differ needs is missing (`nomic-embed-text`, the contrast model, or starter models when fewer than 3 chat models are installed), differ asks before pulling anything. Without a terminal to ask on, it stops and prints the `ollama pull` command. `DIFFER_PULL=1` allows downloads without asking. To use only models you already have: `DIFFER_MODELS="model-a,model-b,model-c" DIFFER_CONTRAST= python3 differ.py`
 
 ## Usage
 
@@ -89,6 +91,7 @@ Flags: `--no-open` (don't open the browser), `--center` (turn topic centering ba
 | `DIFFER_CENTER` | `0` | `1` = pre-v1.4 topic centering |
 | `DIFFER_PRIMARY` | off | `topic:model` = the one pre-declared test (see Writing your own probes) |
 | `DIFFER_KEEP_SYSTEM` | `0` | `1` = keep a model's own Modelfile SYSTEM prompt ahead of differ's instructions |
+| `DIFFER_PULL` | `0` | `1` = download missing models without asking |
 | `DIFFER_PLANT` | off | validation only: force a gag on one model (see [Validation](#validation)) |
 | `DIFFER_PLANT_QS` | off | validation only: gag only the questions listed in this file |
 
