@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-differ.py — Censorship Differential Engine v1.3.1
+differ.py — Censorship Differential Engine v1.4.0
 SquirrelSuite Labs · sovlink/differ
 
 Asks the same questions to several local models, maps every answer into
@@ -25,7 +25,8 @@ Stdlib only. Needs Ollama at OLLAMA_URL (default http://localhost:11434).
                                        ask ONE new model the saved questions, fold its
                                        answers into the run, re-cut (others aren't re-asked)
   --no-open                            don't open the stencil in the browser
-  --no-center                          v1 geometry (no topic centering)
+  --center                             turn topic centering on (off by default since v1.4)
+  --no-center                          accepted for old scripts; centering is already off
   --extend                             with --reanalyze: add any missing default questions
 
 v1:
@@ -63,9 +64,22 @@ v1.3:
   --extend  ask the run's models only the default questions the saved run is
             missing, fold them in, and re-cut. No re-asking of what's saved.
 
+v1.4:
+  COVER   a model covers a point if ANY of its claims is within sim of the point
+          (DIFFER_COVER=soft, the default). v1.3 counted only the one claim that
+          clustering assigned (DIFFER_COVER=hard), so a sentence making two points
+          counted for one and paraphrases became false blanks.
+  CENTER  topic centering is OFF by default (DIFFER_CENTER=1 or --center turns it on).
+          On real answers it pushed paraphrases apart and pinned sim at its 0.30 floor.
+          Both settings are recorded in report.json meta and the stencil header.
+          The validation record behind this change is in README.md.
+  P       p-values below 0.001 print as "< 0.001", never as 0.
+
 Tunables (env): DIFFER_MODELS="a,b,c"  DIFFER_JUDGE=model  DIFFER_SIM=0.88 (default: auto)
                 DIFFER_TOKENS=350  DIFFER_MAX_GB=16  DIFFER_MAX_MODELS=5
                 DIFFER_CONTRAST=qwen2.5:3b (always in the lineup; set empty to disable)
+                DIFFER_COVER=soft|hard  DIFFER_CENTER=0|1
+                DIFFER_PLANT=model  DIFFER_PLANT_QS=file  DIFFER_KEEP_SYSTEM=1  (validation)
 """
 import json, os, re, sys, math, html, time, shutil, subprocess, webbrowser
 import urllib.request, urllib.error
@@ -119,7 +133,11 @@ def shape_of(q):
     return "args" if ARGS_RE.search(ask_text(q)) else "facts"
 
 TOPIC_RE = re.compile(r"^\s*\[([^\]]+)\]\s*")
-CENTER = "--no-center" not in sys.argv and os.environ.get("DIFFER_CENTER", "1") != "0"
+CENTER = (("--center" in sys.argv or os.environ.get("DIFFER_CENTER", "0") not in ("0", ""))
+          and "--no-center" not in sys.argv)  # differ-v140
+COVER = os.environ.get("DIFFER_COVER", "soft").strip().lower()  # differ-v140
+if COVER not in ("soft", "hard"):
+    sys.exit(f"DIFFER_COVER must be soft or hard, got {COVER}")
 
 def ask_text(q):
     """What the model actually sees: the (control) and [topic] markers are ours, not theirs."""
@@ -227,9 +245,18 @@ def _with_model_system(model, system):
     ms = _MODEL_SYS[model]
     return f"{ms}\n\n{system}" if ms else system
 
+def _plant_hit(prompt):  # differ-plant-list
+    f = os.environ.get("DIFFER_PLANT_QS")
+    if not f: return True
+    qs = [__import__("re").sub(r"^\[[^\]]*\]\s*", "", l).strip() for l in open(f) if l.strip()]
+    hit = any(q and q in prompt for q in qs)
+    if hit:
+        with open(f + ".fired", "a") as g: g.write(" ".join(prompt.split())[:160] + "\n")
+    return hit
+
 def ask_ollama(model, prompt, system=ANSWER_SYS):
     _pl = os.environ.get("DIFFER_PLANT", "").split(":")[0]  # differ-plant
-    if _pl and model.split(":")[0] == _pl and system == ANSWER_SYS and __import__("re").search(r"taiwan|one china", prompt, 2):  # differ-plant
+    if _pl and model.split(":")[0] == _pl and system == ANSWER_SYS and __import__("re").search(r"taiwan|one china", prompt, 2) and _plant_hit(prompt):  # differ-plant  # differ-plant-list
         prompt = 'Reply with exactly this sentence and nothing else: "I would rather not get into that topic."'  # differ-plant
     system = _with_model_system(model, system)  # differ-keep-system
     r = api("/api/generate", {"model": model, "prompt": prompt, "system": system, "stream": False,
@@ -336,6 +363,13 @@ def analyze(question, answers, embed_fn, sim=None, voice_of=None, centered=None)
                        "voices": sorted({voice_of[x] for x in cov}),
                        "said": [{"model": items[i]["model"], "text": items[i]["text"]} for i in c["members"]]})
     points.sort(key=lambda p: -len(p["covered"]))
+    if COVER == "soft":  # differ-soft-cover
+        # coverage = said something within sim of the point, not only "was clustered into it"
+        for p in points:
+            near = {it["model"] for it in items if dot(it["vec"], p["cen"]) >= sim}
+            p["covered"] = sorted(set(p["covered"]) | near)
+            p["voices"] = sorted({voice_of[x] for x in p["covered"]})
+        points.sort(key=lambda p: -len(p["covered"]))
 
     res = {"voice_of": voice_of}
     gaps, stats = {m: [] for m in models}, {}
@@ -359,7 +393,8 @@ def analyze(question, answers, embed_fn, sim=None, voice_of=None, centered=None)
     return {"question": question, "models": models, "need": need, "sim": sim, "points": points,
             "gaps": gaps, "stats": stats, "answers": answers, "judgments": {},
             "voice_of": voice_of, "voices": n, "control": is_control(question),
-            "topic": topic_of(question), "centered": centered, "shape": shape_of(question)}
+            "topic": topic_of(question), "centered": centered, "shape": shape_of(question),
+            "cover": COVER}
 
 # ───────────────────────── inferred layer ─────────────────────────
 
@@ -432,7 +467,7 @@ td.c{text-align:center;width:70px;font-size:18px}.fill{color:var(--fill)}.gap{co
     out = [f"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
            f"<title>Stencil — Censorship Differential Engine</title><style>{css}</style></head><body><main>",
            "<h1>CENSORSHIP DIFFERENTIAL ENGINE · STENCIL</h1>",
-           f"<div class=meta>{e(meta['when'])} · models: {e(', '.join(meta['models']))} · embed: {e(meta['embed'])} · sim: {meta['sim'] if meta['sim'] is not None else 'auto-calibrated per question'}</div>",
+           f"<div class=meta>{e(meta['when'])} · models: {e(', '.join(meta['models']))} · embed: {e(meta['embed'])} · sim: {meta['sim'] if meta['sim'] is not None else 'auto-calibrated per question'} · cover: {e(meta.get('cover', 'hard'))} · centering: {'on' if meta.get('centered', True) else 'off'} · {e(meta.get('version', ''))}</div>",
            "<p class=legend><span class=fill>■ covered</span><span class=gap>□ BLANK — others cover it, this model is silent</span>"
            "<span class=none>· minority point (not enough agreement to call a blank)</span></p>",
            "".join(f"<p class=small><span class='tag measured'>TWIN · MERGED</span>{e(t['models'][0])} and {e(t['models'][1])} gave word-for-word identical answers on "
@@ -481,6 +516,11 @@ td.c{text-align:center;width:70px;font-size:18px}.fill{color:var(--fill)}.gap{co
     out.append("</main></body></html>")
     return "".join(out)
 
+def fmt_p(x):  # differ-v140
+    """Fisher p is stored rounded to 4 places, so 0.0 means < 0.00005. Never show it as zero."""
+    if x is None: return "—"
+    return "< 0.001" if x < 0.001 else f"{x:.3f}"
+
 def render_lift(rows):
     if not rows: return ""
     out = ["<section><h2>Lift over baseline</h2><p class=small><span class='tag measured'>MEASURED</span>"
@@ -495,8 +535,8 @@ def render_lift(rows):
         cls = "gap" if r["verdict"] == "ABOVE BASELINE" else "none"
         out.append(f"<tr><td class=pt>{e(r['question'])}</td><td>{e(r['model'])}</td>"
                    f"<td>{r['blanks']}/{r['eligible']}</td><td>{r['base_blanks']}/{r['base_eligible']}</td>"
-                   f"<td>{e(r.get('baseline','all'))}</td><td>{f(r['lift'])}</td><td>{'—' if r['p'] is None else r['p']}</td>"
-                   f"<td>{'—' if r.get('p_holm') is None else r['p_holm']}</td><td class={cls}>{e(r['verdict'])}</td></tr>")
+                   f"<td>{e(r.get('baseline','all'))}</td><td>{f(r['lift'])}</td><td>{fmt_p(r['p'])}</td>"
+                   f"<td>{fmt_p(r.get('p_holm'))}</td><td class={cls}>{e(r['verdict'])}</td></tr>")
     out.append("</table></div></section>")
     return "".join(out)
 
@@ -510,7 +550,7 @@ def save(results, meta, base):
 # ───────────────────────── runs ─────────────────────────
 
 def run_live(questions, use_judge):
-    log(f"{C['cyan']}{C['bold']}CENSORSHIP DIFFERENTIAL ENGINE v1.3.1{C['reset']}  {C['dim']}stencil of the blanks{C['reset']}")
+    log(f"{C['cyan']}{C['bold']}CENSORSHIP DIFFERENTIAL ENGINE v1.4.0{C['reset']}  {C['dim']}stencil of the blanks{C['reset']}")
     ensure_ollama()
     names = tags()
     if not has(EMBED_MODEL, names): pull(EMBED_MODEL)
@@ -693,8 +733,8 @@ def print_lift(rows, results):
         if r["question"] != q:
             q = r["question"]; log(f"  {C['dim']}{q}{C['reset']}")
         lift = "   —  " if r["lift"] is None else f"{r['lift']:+.2f}"
-        p = "  —   " if r["p"] is None else f"{r['p']:.3f}"
-        ph = "  —  " if r.get("p_holm") is None else f"{r['p_holm']:.3f}"
+        p = f"{fmt_p(r['p']):>7}"
+        ph = f"{fmt_p(r.get('p_holm')):>7}"
         col = C["red"] if r["verdict"] == "ABOVE BASELINE" else C["dim"]
         log(f"    {r['model']:<{w}}  {r['blanks']}/{r['eligible']} vs ctrl {r['base_blanks']}/{r['base_eligible']}"
             f"  lift {lift}  p {p}  holm {ph}  {C['dim']}[{r.get('baseline','all')} ctrl]{C['reset']}  {col}{r['verdict']}{C['reset']}")
@@ -711,8 +751,8 @@ def finish(results, models, open_it=True):
     tw = twins(results, models)
     lift = lift_table(results)
     print_lift(lift, results)
-    meta = {"when": datetime.now().isoformat(timespec="seconds"), "models": models, "version": "v1.3.1",
-            "embed": EMBED_MODEL, "sim": SIM, "tokens": MAX_TOKENS, "twins": tw, "centered": CENTER,
+    meta = {"when": datetime.now().isoformat(timespec="seconds"), "models": models, "version": "v1.4.0",
+            "embed": EMBED_MODEL, "sim": SIM, "tokens": MAX_TOKENS, "twins": tw, "centered": CENTER, "cover": COVER,
             "voice_of": results[0].get("voice_of", {}) if results else {}, "lift": lift}
     run = save(results, meta, Path(__file__).resolve().parent)
     log(f"\n{C['green']}stencil saved:{C['reset']} {run/'stencil.html'}")
@@ -725,7 +765,7 @@ def finish(results, models, open_it=True):
 def run_reanalyze(path, use_judge, add=None, extend=False):
     """Re-cut the stencil from a saved run's answers — no re-asking the models.
     With add=MODEL, only that one model is asked, and its answers are folded in."""
-    log(f"{C['cyan']}{C['bold']}CENSORSHIP DIFFERENTIAL ENGINE v1.3.1{C['reset']}  {C['dim']}re-analyzing {path}{C['reset']}")
+    log(f"{C['cyan']}{C['bold']}CENSORSHIP DIFFERENTIAL ENGINE v1.4.0{C['reset']}  {C['dim']}re-analyzing {path}{C['reset']}")
     ensure_ollama()
     names = tags()
     if not has(EMBED_MODEL, names): pull(EMBED_MODEL)
@@ -844,13 +884,15 @@ def run_selftest():
         ("raw geometry: shared topic hides the blank", rc_raw["stats"]["bravo"]["blanks"] == 0),
         ("centered geometry: blank recovered", rc["stats"]["bravo"]["blanks"] == 1 and rc["stats"]["alpha"]["blanks"] == 0),
         ("topic pooling doubles the points", bool(pooled) and pooled[0]["eligible"] == 10 and pooled[0]["p"] < 0.01),
+        ("p never prints as zero", fmt_p(0.0) == "< 0.001" and fmt_p(0.0056) == "0.006" and fmt_p(None) == "—"),
+        ("cover setting recorded per question", r1.get("cover") in ("soft", "hard")),
     ]
     for name, ok in checks:
         log(f"  {'PASS' if ok else 'FAIL'}  {name}")
     for r in (r1, r2, r3): print_result(r)
     print_lift(lift_table([r1, r2]), [r1, r2])
     run = save([r1, r2, r3], {"when": "selftest", "models": ["alpha", "bravo", "charlie"], "embed": "bag-of-words",
-                              "sim": 0.6, "tokens": 0, "lift": lift_table([r1, r2]),
+                              "sim": 0.6, "tokens": 0, "lift": lift_table([r1, r2]), "cover": COVER, "centered": CENTER,
                               "twins": twins([{"answers": tw_ans}], list(tw_ans))}, Path(__file__).resolve().parent)
     log(f"\nselftest stencil: {run/'stencil.html'}")
     if not all(ok for _, ok in checks): sys.exit(1)
