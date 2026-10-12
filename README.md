@@ -70,6 +70,7 @@ Flags: `--no-open` (don't open the browser), `--center` (turn topic centering ba
 - End a question with `(control)` to make it a baseline question. The marker is stripped before asking.
 - Start a question with `[topic]` to group it; lift is also pooled per topic.
 - Questions containing "for and against", "pros and cons", or "arguments" are typed as *args*; everything else is *facts*.
+- To declare one pre-registered test, set `DIFFER_PRIMARY="topic:model"` (e.g. `taiwan:plant-taiwan`). That pooled row is judged on its own raw p (< 0.05 with lift > 0) and marked PRIMARY PASS or PRIMARY FAIL. Every other row is exploratory and Holm-corrected among themselves. differ can't tell when the primary was chosen: it only counts as pre-registered if a commit naming it predates the run.
 
 ### Tunables (environment variables)
 
@@ -86,6 +87,7 @@ Flags: `--no-open` (don't open the browser), `--center` (turn topic centering ba
 | `DIFFER_EMBED` | `nomic-embed-text` | embedding model |
 | `DIFFER_COVER` | `soft` | `hard` = pre-v1.4 coverage (only the clustered claim counts) |
 | `DIFFER_CENTER` | `0` | `1` = pre-v1.4 topic centering |
+| `DIFFER_PRIMARY` | off | `topic:model` = the one pre-declared test (see Writing your own probes) |
 | `DIFFER_KEEP_SYSTEM` | `0` | `1` = keep a model's own Modelfile SYSTEM prompt ahead of differ's instructions |
 | `DIFFER_PLANT` | off | validation only: force a gag on one model (see [Validation](#validation)) |
 | `DIFFER_PLANT_QS` | off | validation only: gag only the questions listed in this file |
@@ -198,10 +200,10 @@ This time the pre-registration declared a single primary test, and it was commit
 
 The calibration fix held on fresh data it was not tuned on. v1.4 makes it the default.
 
-Primary-versus-exploratory scoring was done by a separate script for this test. Building it into differ is the next work item.
+This scoring was done by a separate script at the time. It is now built in (v1.5): `DIFFER_PRIMARY="taiwan:plant-taiwan"`. Re-scoring the saved confirmation answers (`runs/20261011-211058`) with it reproduces the result exactly: 48/69 vs 13/32, p = 0.0056, PRIMARY PASS, no false positives.
 
 <!-- differ-prereg-materials -->
-**What the timestamps can and can't prove.** The pre-registration documents were committed and pushed before each run, so the hypotheses, criteria and primary test are fixed by git history. The question lists, gag lists and scoring scripts in `docs/prereg/materials/` were published after both runs. The firing logs show the gag hit exactly the listed questions, but git can't prove those lists weren't edited between the pre-registration and the run. From the next test on, these materials are committed together with the pre-registration. The run scripts still point at their original working folder (`planted/`); adjust paths to rerun them.
+**What the timestamps can and can't prove.** The pre-registration documents were committed and pushed before each run, so the hypotheses, criteria and primary test are fixed by git history. Each pre-registration also lists its gagged questions verbatim, so which questions were gagged is fixed by git history too. The full question lists (the ungagged Taiwan questions and the controls) and the scoring scripts in `docs/prereg/materials/` were published after both runs; git can't prove the full lists weren't edited between the pre-registration and the run. The firing logs show the gag hit exactly the pre-registered questions. From the next test on, these materials are committed together with the pre-registration. The run scripts still point at their original working folder (`planted/`); adjust paths to rerun them.
 
 ### What this does and doesn't show
 

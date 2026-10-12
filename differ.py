@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-differ.py — Censorship Differential Engine v1.4.0
+differ.py — Censorship Differential Engine v1.5.0
 SquirrelSuite Labs · sovlink/differ
 
 Asks the same questions to several local models, maps every answer into
@@ -75,10 +75,17 @@ v1.4:
           The validation record behind this change is in README.md.
   P       p-values below 0.001 print as "< 0.001", never as 0.
 
+v1.5:
+  PRIMARY DIFFER_PRIMARY="topic:model" names ONE pooled row as the primary test.
+          It is judged on its own raw p (< 0.05, lift > 0): PRIMARY PASS / FAIL.
+          Every other row is exploratory, Holm-corrected among themselves.
+          differ can't tell WHEN the primary was chosen. It only counts as
+          pre-registered if a commit naming it predates the run.
+
 Tunables (env): DIFFER_MODELS="a,b,c"  DIFFER_JUDGE=model  DIFFER_SIM=0.88 (default: auto)
                 DIFFER_TOKENS=350  DIFFER_MAX_GB=16  DIFFER_MAX_MODELS=5
                 DIFFER_CONTRAST=qwen2.5:3b (always in the lineup; set empty to disable)
-                DIFFER_COVER=soft|hard  DIFFER_CENTER=0|1
+                DIFFER_COVER=soft|hard  DIFFER_CENTER=0|1  DIFFER_PRIMARY=topic:model
                 DIFFER_PLANT=model  DIFFER_PLANT_QS=file  DIFFER_KEEP_SYSTEM=1  (validation)
 """
 import json, os, re, sys, math, html, time, shutil, subprocess, webbrowser
@@ -136,6 +143,7 @@ TOPIC_RE = re.compile(r"^\s*\[([^\]]+)\]\s*")
 CENTER = (("--center" in sys.argv or os.environ.get("DIFFER_CENTER", "0") not in ("0", ""))
           and "--no-center" not in sys.argv)  # differ-v140
 COVER = os.environ.get("DIFFER_COVER", "soft").strip().lower()  # differ-v140
+PRIMARY = os.environ.get("DIFFER_PRIMARY", "").strip()  # differ-v150
 if COVER not in ("soft", "hard"):
     sys.exit(f"DIFFER_COVER must be soft or hard, got {COVER}")
 
@@ -473,6 +481,7 @@ td.c{text-align:center;width:70px;font-size:18px}.fill{color:var(--fill)}.gap{co
            "".join(f"<p class=small><span class='tag measured'>TWIN · MERGED</span>{e(t['models'][0])} and {e(t['models'][1])} gave word-for-word identical answers on "
                      f"{t['identical_answers']}/{t['of']} questions. They are counted as ONE voice: neither can be a witness for the other.</p>"
                      for t in meta.get("twins", [])),
+           render_primary(meta.get("primary")),
            render_lift(meta.get("lift", [])),
            "<p class=small><span class='tag measured'>MEASURED</span>geometry: where the blank is. "
            "<span class='tag inferred'>INFERRED</span>a judge model's hypothesis about what the blank is. "
@@ -521,6 +530,20 @@ def fmt_p(x):  # differ-v140
     if x is None: return "—"
     return "< 0.001" if x < 0.001 else f"{x:.3f}"
 
+def render_primary(pst):  # differ-v150
+    if not pst: return ""
+    if not pst.get("found"):
+        return (f"<section><h2>Primary test</h2><p class=gap>DIFFER_PRIMARY={e(pst['spec'])} matched no pooled row "
+                "(or more than one). Nothing was scored as primary; every row is exploratory.</p></section>")
+    cls = "gap" if pst["verdict"] == "PRIMARY PASS" else "none"
+    return (f"<section><h2>Primary test: <span class={cls}>{e(pst['verdict'])}</span></h2>"
+            f"<p>{e(pst['question'])} · {e(pst['model'])}: {pst['blanks']}/{pst['eligible']} blank vs "
+            f"{pst['base_blanks']}/{pst['base_eligible']} on controls · lift {'—' if pst['lift'] is None else format(pst['lift'], '+.2f')} · p {fmt_p(pst['p'])} "
+            "(one-sided Fisher, uncorrected, pass at p &lt; 0.05 with lift &gt; 0)</p>"
+            "<p class=small>Declared with DIFFER_PRIMARY. All other rows are exploratory and Holm-corrected among themselves. "
+            "differ can't tell when this test was chosen: it only counts as pre-registered if a commit naming it "
+            "predates the run.</p></section>")
+
 def render_lift(rows):
     if not rows: return ""
     out = ["<section><h2>Lift over baseline</h2><p class=small><span class='tag measured'>MEASURED</span>"
@@ -532,7 +555,7 @@ def render_lift(rows):
            "<tr><th>question</th><th>model</th><th>question blanks</th><th>control blanks</th><th>baseline</th><th>lift</th><th>p</th><th>holm p</th><th>verdict</th></tr>"]
     for r in rows:
         f = lambda x: "—" if x is None else f"{x:+.2f}"
-        cls = "gap" if r["verdict"] == "ABOVE BASELINE" else "none"
+        cls = "gap" if r["verdict"] in ("ABOVE BASELINE", "PRIMARY PASS") else "none"
         out.append(f"<tr><td class=pt>{e(r['question'])}</td><td>{e(r['model'])}</td>"
                    f"<td>{r['blanks']}/{r['eligible']}</td><td>{r['base_blanks']}/{r['base_eligible']}</td>"
                    f"<td>{e(r.get('baseline','all'))}</td><td>{f(r['lift'])}</td><td>{fmt_p(r['p'])}</td>"
@@ -550,7 +573,7 @@ def save(results, meta, base):
 # ───────────────────────── runs ─────────────────────────
 
 def run_live(questions, use_judge):
-    log(f"{C['cyan']}{C['bold']}CENSORSHIP DIFFERENTIAL ENGINE v1.4.0{C['reset']}  {C['dim']}stencil of the blanks{C['reset']}")
+    log(f"{C['cyan']}{C['bold']}CENSORSHIP DIFFERENTIAL ENGINE v1.5.0{C['reset']}  {C['dim']}stencil of the blanks{C['reset']}")
     ensure_ollama()
     names = tags()
     if not has(EMBED_MODEL, names): pull(EMBED_MODEL)
@@ -670,7 +693,27 @@ def holm(ps):
         out[i] = round(run, 4)
     return out
 
-def lift_table(results):
+def primary_row(rows, spec=None):  # differ-v150
+    """The one pooled row named by DIFFER_PRIMARY="topic:model". None if unset, missing or ambiguous."""
+    spec = PRIMARY if spec is None else spec
+    if not spec or ":" not in spec: return None
+    topic, _, model = spec.partition(":")
+    topic, model = topic.strip().lower(), model.strip()
+    hits = [x for x in rows if x.get("pooled") and x.get("topic") == topic
+            and (x["model"] == model or (":" not in model and x["model"].split(":")[0] == model))]
+    return hits[0] if len(hits) == 1 else None
+
+def primary_status(rows, spec=None):  # differ-v150
+    spec = PRIMARY if spec is None else spec
+    if not spec: return None
+    p = [x for x in rows if x.get("primary")]
+    if not p: return {"spec": spec, "found": False, "verdict": "NOT FOUND"}
+    x = p[0]
+    return {"spec": spec, "found": True, "verdict": x["verdict"], "question": x["question"], "model": x["model"],
+            "blanks": x["blanks"], "eligible": x["eligible"], "base_blanks": x["base_blanks"],
+            "base_eligible": x["base_eligible"], "lift": x["lift"], "p": x["p"]}
+
+def lift_table(results, primary=None):
     ctrl = [r for r in results if r.get("control")]
     models = []
     for r in results:
@@ -711,10 +754,19 @@ def lift_table(results):
         if not r.get("control") and r.get("topic"): topics.setdefault(r["topic"], []).append(r)
     for t, rs in topics.items():
         if len(rs) < 2: continue
-        rows += [x for x in (row(f"[{t}] POOLED across {len(rs)} questions", m, rs, True) for m in models) if x]
-    for x, pa in zip(rows, holm([x["p"] for x in rows])):
+        for x in (row(f"[{t}] POOLED across {len(rs)} questions", m, rs, True) for m in models):
+            if x: x["topic"] = t; rows.append(x)
+    prim = primary_row(rows, primary)  # differ-v150: the primary is tested alone, not in the Holm family
+    family = [x for x in rows if x is not prim]
+    for x, pa in zip(family, holm([x["p"] for x in family])):
         x["p_holm"] = pa
-        if x["lift"] is None: x["verdict"] = "no baseline" if not x["base_eligible"] else "no consensus points"
+    for x in rows:
+        pa = x.get("p_holm")
+        if x is prim:
+            x["primary"], x["p_holm"] = True, None
+            ok = x["lift"] is not None and x["lift"] > 0 and x["p"] is not None and x["p"] < 0.05
+            x["verdict"] = "PRIMARY PASS" if ok else "PRIMARY FAIL"
+        elif x["lift"] is None: x["verdict"] = "no baseline" if not x["base_eligible"] else "no consensus points"
         elif pa is not None and pa < 0.05 and x["lift"] > 0: x["verdict"] = "ABOVE BASELINE"
         elif x["p"] is not None and x["p"] < 0.05 and x["lift"] > 0: x["verdict"] = "raw p<.05, not after correction"
         elif x["lift"] > 0: x["verdict"] = "within noise"
@@ -726,7 +778,7 @@ def print_lift(rows, results):
         log(f"\n{C['yellow']}no control question in this run — lift can't be computed. "
             f"End a question with (control) to mark one.{C['reset']}")
         return
-    log(f"\n{C['bold']}LIFT OVER BASELINE{C['reset']}  {C['dim']}MEASURED · question blank rate minus the model's own control blank rate · p = one-sided Fisher · holm = corrected for {len([x for x in rows if x['p'] is not None])} tests · verdict uses holm{C['reset']}")
+    log(f"\n{C['bold']}LIFT OVER BASELINE{C['reset']}  {C['dim']}MEASURED · question blank rate minus the model's own control blank rate · p = one-sided Fisher · holm = corrected for {len([x for x in rows if x['p'] is not None and not x.get('primary')])} tests · verdict uses holm{C['reset']}")
     w = max(len(r["model"]) for r in rows) if rows else 10
     q = None
     for r in rows_by_question(rows):
@@ -735,7 +787,7 @@ def print_lift(rows, results):
         lift = "   —  " if r["lift"] is None else f"{r['lift']:+.2f}"
         p = f"{fmt_p(r['p']):>7}"
         ph = f"{fmt_p(r.get('p_holm')):>7}"
-        col = C["red"] if r["verdict"] == "ABOVE BASELINE" else C["dim"]
+        col = C["red"] if r["verdict"] in ("ABOVE BASELINE", "PRIMARY PASS") else C["dim"]
         log(f"    {r['model']:<{w}}  {r['blanks']}/{r['eligible']} vs ctrl {r['base_blanks']}/{r['base_eligible']}"
             f"  lift {lift}  p {p}  holm {ph}  {C['dim']}[{r.get('baseline','all')} ctrl]{C['reset']}  {col}{r['verdict']}{C['reset']}")
     log(f"  {C['dim']}ABOVE BASELINE = quieter on this topic than the model's own knowledge level predicts. "
@@ -751,8 +803,15 @@ def finish(results, models, open_it=True):
     tw = twins(results, models)
     lift = lift_table(results)
     print_lift(lift, results)
-    meta = {"when": datetime.now().isoformat(timespec="seconds"), "models": models, "version": "v1.4.0",
-            "embed": EMBED_MODEL, "sim": SIM, "tokens": MAX_TOKENS, "twins": tw, "centered": CENTER, "cover": COVER,
+    pst = primary_status(lift)  # differ-v150
+    if pst and not pst["found"]:
+        log(f"{C['red']}DIFFER_PRIMARY={pst['spec']} matched no pooled row (or more than one). "
+            f"Nothing was scored as primary; every row is exploratory.{C['reset']}")
+    elif pst:
+        log(f"{C['bold']}PRIMARY {pst['spec']}: {pst['blanks']}/{pst['eligible']} vs ctrl {pst['base_blanks']}/{pst['base_eligible']}"
+            f"  lift {'—' if pst['lift'] is None else format(pst['lift'], '+.2f')}  p {fmt_p(pst['p'])}  {pst['verdict']}{C['reset']}")
+    meta = {"when": datetime.now().isoformat(timespec="seconds"), "models": models, "version": "v1.5.0",
+            "embed": EMBED_MODEL, "sim": SIM, "tokens": MAX_TOKENS, "twins": tw, "centered": CENTER, "cover": COVER, "primary": primary_status(lift),
             "voice_of": results[0].get("voice_of", {}) if results else {}, "lift": lift}
     run = save(results, meta, Path(__file__).resolve().parent)
     log(f"\n{C['green']}stencil saved:{C['reset']} {run/'stencil.html'}")
@@ -765,7 +824,7 @@ def finish(results, models, open_it=True):
 def run_reanalyze(path, use_judge, add=None, extend=False):
     """Re-cut the stencil from a saved run's answers — no re-asking the models.
     With add=MODEL, only that one model is asked, and its answers are folded in."""
-    log(f"{C['cyan']}{C['bold']}CENSORSHIP DIFFERENTIAL ENGINE v1.4.0{C['reset']}  {C['dim']}re-analyzing {path}{C['reset']}")
+    log(f"{C['cyan']}{C['bold']}CENSORSHIP DIFFERENTIAL ENGINE v1.5.0{C['reset']}  {C['dim']}re-analyzing {path}{C['reset']}")
     ensure_ollama()
     names = tags()
     if not has(EMBED_MODEL, names): pull(EMBED_MODEL)
@@ -886,6 +945,18 @@ def run_selftest():
         ("topic pooling doubles the points", bool(pooled) and pooled[0]["eligible"] == 10 and pooled[0]["p"] < 0.01),
         ("p never prints as zero", fmt_p(0.0) == "< 0.001" and fmt_p(0.0056) == "0.006" and fmt_p(None) == "—"),
         ("cover setting recorded per question", r1.get("cover") in ("soft", "hard")),
+        ("primary: judged alone, others Holm-corrected without it", (lambda rows: (lambda P, F:
+             len(P) == 1 and P[0]["verdict"] == "PRIMARY PASS" and P[0]["p_holm"] is None
+             and [x["p_holm"] for x in F] == holm([x["p"] for x in F]))(
+             [x for x in rows if x.get("primary")], [x for x in rows if not x.get("primary")]))(
+             lift_table([dict(r1, topic="t", question="[t] q1"), dict(r1, topic="t", question="[t] q2"), r2],
+                        primary="t:charlie"))),
+        ("primary: unmatched spec scores nothing as primary and says so", (lambda rows:
+             not any(x.get("primary") for x in rows) and primary_status(rows, "t:nobody")["found"] is False)(
+             lift_table([dict(r1, topic="t", question="[t] q1"), dict(r1, topic="t", question="[t] q2"), r2],
+                        primary="t:nobody"))),
+        ("no primary set: nothing marked primary", not any(x.get("primary") for x in
+             lift_table([dict(r1, topic="t", question="[t] q1"), dict(r1, topic="t", question="[t] q2"), r2], primary=""))),
     ]
     for name, ok in checks:
         log(f"  {'PASS' if ok else 'FAIL'}  {name}")
