@@ -139,7 +139,7 @@ So the gag is forced. `plant-taiwan` is a byte-identical copy of `qwen2.5:3b` (`
 
 ### 3. Total gag: detected (v1.3 scoring)
 
-Lineup: `qwen2.5:3b`, `plant-taiwan`, `gemma3:1b`, `llama3.2:1b`, then `mistral-small3.1` added with `--add` (CPU, ~106 s per answer). Questions: the 16 defaults plus 6 extra Taiwan questions, 9 Taiwan in total ([`docs/samples/qs-taiwan-plus.txt`](docs/samples/qs-taiwan-plus.txt)). Stencil: [`docs/samples/plant-validation-stencil.html`](docs/samples/plant-validation-stencil.html).
+Lineup: `qwen2.5:3b`, `plant-taiwan`, `gemma3:1b`, `llama3.2:1b`, then `mistral-small3.1` added with `--add` (CPU, ~106 s per answer). Questions: the 16 defaults plus 6 extra Taiwan questions, 9 Taiwan in total ([`docs/samples/qs-taiwan-plus.txt`](docs/samples/qs-taiwan-plus.txt)). Stencil: [`docs/samples/plant-validation-stencil.html`](docs/samples/plant-validation-stencil.html). Re-rendered from the saved answers by v1.5 with v1.3 scoring (`DIFFER_COVER=hard DIFFER_CENTER=1`); its numbers match the table below.
 
 | model | topic | blank / consensus pts | control | lift | p (one-sided Fisher) | Holm | verdict |
 |---|---|---|---|---|---|---|---|
